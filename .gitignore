@@ -1,0 +1,19 @@
+# Test files
+test/
+tests/
+*.test
+test-secrets/
+
+# GitSecure reports
+gitsecure-report-*.txt
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db

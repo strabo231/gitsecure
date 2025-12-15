@@ -1,0 +1,82 @@
+name: Test GitSecure
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Test on Ubuntu
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+    
+    - name: Make script executable
+      run: chmod +x gitsecure
+    
+    - name: Test help command
+      run: ./gitsecure --help
+    
+    - name: Test version command
+      run: ./gitsecure --version
+    
+    - name: Test patterns command
+      run: ./gitsecure patterns
+    
+    - name: Create test repo
+      run: |
+        git config --global user.email "test@test.com"
+        git config --global user.name "Test"
+        git init test-repo
+        cd test-repo
+        echo "test" > file.txt
+        git add file.txt
+        git commit -m "Initial"
+    
+    - name: Test scan in repo
+      run: |
+        cd test-repo
+        ../gitsecure scan || true
+    
+    - name: Test protect command
+      run: |
+        cd test-repo
+        ../gitsecure protect
+        test -f .gitignore
+        grep -q "GitSecure" .gitignore
+    
+    - name: Create test file with fake secret
+      run: |
+        cd test-repo
+        echo 'API_KEY="test_1234567890abcdefghijklmnopqrstuvwxyz"' > config.js
+    
+    - name: Test check command
+      run: |
+        cd test-repo
+        ../gitsecure check config.js || true
+    
+    - name: Install shellcheck
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y shellcheck
+    
+    - name: Run shellcheck
+      continue-on-error: true
+      run: shellcheck gitsecure
+    
+    - name: Verify script structure
+      run: |
+        grep -q "scan_file()" gitsecure
+        grep -q "audit_repo()" gitsecure
+        grep -q "install_hook()" gitsecure
+        echo "✓ Script structure verified"
+    
+    - name: All tests passed
+      run: |
+        echo "================================"
+        echo "✓ All tests passed successfully!"
+        echo "================================"

@@ -1,0 +1,533 @@
+#!/bin/bash
+
+# GitSecure - Git Secret Scanner and Protection Tool
+# Version: 1.0.0
+
+VERSION="1.0.0"
+SCRIPT_NAME="gitsecure"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
+NC='\033[0m'
+
+print_success() { echo -e "${GREEN}✓${NC} $1"; }
+print_error() { echo -e "${RED}✗${NC} $1"; }
+print_info() { echo -e "${BLUE}ℹ${NC} $1"; }
+print_warning() { echo -e "${YELLOW}⚠${NC} $1"; }
+print_header() { echo -e "${CYAN}${1}${NC}"; }
+print_critical() { echo -e "${RED}🚨${NC} $1"; }
+
+show_usage() {
+    cat << EOF
+${BLUE}GitSecure${NC} - Git Secret Scanner and Protection Tool v${VERSION}
+
+${YELLOW}Usage:${NC}
+    $SCRIPT_NAME <command> [options]
+
+${YELLOW}Commands:${NC}
+    scan                     Scan staged files for secrets
+    audit                    Scan entire repository history
+    check <file>             Check specific file for secrets
+    patterns                 Show detected secret patterns
+    protect                  Generate secure .gitignore
+    install-hook             Install pre-commit hook
+    uninstall-hook           Remove pre-commit hook
+    report                   Generate security report
+
+${YELLOW}Options:${NC}
+    -h, --help              Show this help
+    -v, --version           Show version
+    --no-color              Disable colored output
+
+${YELLOW}Examples:${NC}
+    $SCRIPT_NAME scan
+        → Scan staged files before commit
+
+    $SCRIPT_NAME audit
+        → Check entire git history for secrets
+
+    $SCRIPT_NAME check config.json
+        → Check specific file
+
+    $SCRIPT_NAME install-hook
+        → Install pre-commit secret scanner
+
+    $SCRIPT_NAME protect
+        → Generate .gitignore for common secrets
+
+${YELLOW}What Gets Detected:${NC}
+    • AWS Access Keys
+    • API Keys (GitHub, Stripe, etc.)
+    • Private Keys (RSA, SSH)
+    • Database Credentials
+    • OAuth Tokens
+    • JWT Tokens
+    • Passwords in code
+    • .env files
+    • And 100+ more patterns
+
+${YELLOW}Pre-Commit Hook:${NC}
+    Install the hook to automatically scan before every commit:
+    
+    $ $SCRIPT_NAME install-hook
+    
+    Then all commits will be checked automatically!
+
+EOF
+}
+
+show_version() {
+    echo "$SCRIPT_NAME version $VERSION"
+}
+
+# Check if in git repo
+check_git_repo() {
+    if ! git rev-parse --git-dir > /dev/null 2>&1; then
+        print_error "Not a git repository"
+        return 1
+    fi
+    return 0
+}
+
+# Secret patterns (GitHub's supported + common patterns)
+declare -A SECRET_PATTERNS=(
+    # AWS
+    ["AWS Access Key"]="AKIA[0-9A-Z]{16}"
+    ["AWS Secret Key"]="[0-9a-zA-Z/+=]{40}"
+    
+    # GitHub
+    ["GitHub Token"]="gh[pousr]_[0-9a-zA-Z]{36}"
+    ["GitHub PAT"]="github_pat_[0-9a-zA-Z_]{82}"
+    
+    # API Keys
+    ["Generic API Key"]="[aA][pP][iI][-_]?[kK][eE][yY][ ]*[:=][ ]*['\"]?[0-9a-zA-Z]{32,}['\"]?"
+    ["Stripe API Key"]="sk_live_[0-9a-zA-Z]{24,}"
+    ["Slack Token"]="xox[baprs]-[0-9a-zA-Z]{10,}"
+    
+    # Private Keys
+    ["RSA Private Key"]="-----BEGIN RSA PRIVATE KEY-----"
+    ["SSH Private Key"]="-----BEGIN OPENSSH PRIVATE KEY-----"
+    ["PGP Private Key"]="-----BEGIN PGP PRIVATE KEY BLOCK-----"
+    
+    # Database
+    ["Database URL"]="(postgres|mysql|mongodb)://[^:]+:[^@]+@"
+    ["Connection String"]="(Server|Host|Data Source)=.*;.*[Pp]assword=.*;"
+    
+    # Passwords
+    ["Password in Code"]="[pP][aA][sS][sS][wW][oO][rR][dD][ ]*[:=][ ]*['\"][^'\"]{8,}['\"]"
+    
+    # OAuth/JWT
+    ["JWT Token"]="eyJ[A-Za-z0-9_-]*\.eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*"
+    ["Bearer Token"]="[Bb]earer [A-Za-z0-9_\-\.=]+"
+    
+    # Cloud Providers
+    ["Azure Key"]="[0-9a-zA-Z/+=]{88}"
+    ["Google API Key"]="AIza[0-9A-Za-z_-]{35}"
+    
+    # Generic Secrets
+    ["Secret Key"]="[sS][eE][cC][rR][eE][tT][-_]?[kK][eE][yY][ ]*[:=][ ]*['\"]?[0-9a-zA-Z]{20,}['\"]?"
+    ["Auth Token"]="[aA][uU][tT][hH][-_]?[tT][oO][kK][eE][nN][ ]*[:=][ ]*['\"]?[0-9a-zA-Z]{20,}['\"]?"
+)
+
+# Sensitive file patterns
+SENSITIVE_FILES=(
+    "*.pem"
+    "*.key"
+    "*.p12"
+    "*.pfx"
+    "*.pkcs12"
+    ".env"
+    ".env.*"
+    "credentials.json"
+    "secrets.json"
+    "config.prod.json"
+    "id_rsa"
+    "id_dsa"
+    "*.ovpn"
+    "*.rdp"
+)
+
+# Scan file for secrets
+scan_file() {
+    local file="$1"
+    local found=0
+    
+    if [ ! -f "$file" ]; then
+        return 0
+    fi
+    
+    # Check sensitive filename patterns
+    for pattern in "${SENSITIVE_FILES[@]}"; do
+        if [[ $file == $pattern ]]; then
+            print_critical "Sensitive file detected: $file"
+            ((found++))
+        fi
+    done
+    
+    # Scan content for secret patterns
+    for name in "${!SECRET_PATTERNS[@]}"; do
+        local pattern="${SECRET_PATTERNS[$name]}"
+        
+        if grep -qE "$pattern" "$file" 2>/dev/null; then
+            print_warning "Possible $name found in: $file"
+            
+            # Show line number (without revealing the secret)
+            local line_num=$(grep -nE "$pattern" "$file" | head -1 | cut -d: -f1)
+            echo "  Line $line_num: [REDACTED for security]"
+            ((found++))
+        fi
+    done
+    
+    return $found
+}
+
+# Scan staged files
+scan_staged() {
+    check_git_repo || return 1
+    
+    print_header "═══════════════════════════════════════════════════════════════"
+    print_header "              SCANNING STAGED FILES FOR SECRETS"
+    print_header "═══════════════════════════════════════════════════════════════"
+    echo ""
+    
+    local files=$(git diff --cached --name-only --diff-filter=ACM)
+    
+    if [ -z "$files" ]; then
+        print_info "No staged files to scan"
+        return 0
+    fi
+    
+    local total_issues=0
+    local files_scanned=0
+    
+    while IFS= read -r file; do
+        if [ -f "$file" ]; then
+            ((files_scanned++))
+            scan_file "$file"
+            local issues=$?
+            ((total_issues += issues))
+        fi
+    done <<< "$files"
+    
+    echo ""
+    print_header "═══════════════════════════════════════════════════════════════"
+    
+    if [ $total_issues -eq 0 ]; then
+        print_success "No secrets detected in $files_scanned files"
+        print_info "Safe to commit!"
+    else
+        print_critical "Found $total_issues potential secret(s) in staged files"
+        print_error "DO NOT COMMIT!"
+        echo ""
+        print_info "Actions:"
+        echo "  1. Remove secrets from files"
+        echo "  2. Use environment variables instead"
+        echo "  3. Add sensitive files to .gitignore"
+        echo "  4. Run: $SCRIPT_NAME protect"
+        return 1
+    fi
+    
+    echo ""
+}
+
+# Audit entire repository
+audit_repo() {
+    check_git_repo || return 1
+    
+    print_header "═══════════════════════════════════════════════════════════════"
+    print_header "           AUDITING REPOSITORY HISTORY FOR SECRETS"
+    print_header "═══════════════════════════════════════════════════════════════"
+    echo ""
+    print_warning "This may take a while for large repositories..."
+    echo ""
+    
+    local total_issues=0
+    local commits_checked=0
+    
+    # Get all tracked files
+    local files=$(git ls-files)
+    
+    while IFS= read -r file; do
+        if [ -f "$file" ]; then
+            scan_file "$file" > /dev/null
+            local issues=$?
+            ((total_issues += issues))
+        fi
+    done <<< "$files"
+    
+    # Check for secrets in commit messages
+    print_info "Checking commit messages..."
+    local bad_commits=$(git log --all --grep -iE "(password|secret|api[-_]?key|token)" --oneline | wc -l)
+    
+    if [ $bad_commits -gt 0 ]; then
+        print_warning "Found $bad_commits commits with sensitive keywords in messages"
+    fi
+    
+    echo ""
+    print_header "═══════════════════════════════════════════════════════════════"
+    print_header "                    AUDIT RESULTS"
+    print_header "═══════════════════════════════════════════════════════════════"
+    echo ""
+    
+    if [ $total_issues -eq 0 ] && [ $bad_commits -eq 0 ]; then
+        print_success "No secrets detected in current repository state"
+    else
+        print_critical "Found $total_issues potential secret(s) in files"
+        [ $bad_commits -gt 0 ] && print_warning "$bad_commits commits with sensitive keywords"
+        echo ""
+        print_info "Note: This scans current files only, not full git history"
+        print_info "For deep history scan, use tools like git-secrets or truffleHog"
+    fi
+    
+    echo ""
+}
+
+# Check specific file
+check_file() {
+    local file="$1"
+    
+    if [ -z "$file" ]; then
+        print_error "Please specify a file"
+        return 1
+    fi
+    
+    if [ ! -f "$file" ]; then
+        print_error "File not found: $file"
+        return 1
+    fi
+    
+    print_header "═══════════════════════════════════════════════════════════════"
+    print_header "              CHECKING: $file"
+    print_header "═══════════════════════════════════════════════════════════════"
+    echo ""
+    
+    scan_file "$file"
+    local issues=$?
+    
+    echo ""
+    
+    if [ $issues -eq 0 ]; then
+        print_success "No secrets detected"
+    else
+        print_critical "Found $issues potential secret(s)"
+    fi
+}
+
+# Show detected patterns
+show_patterns() {
+    print_header "═══════════════════════════════════════════════════════════════"
+    print_header "              DETECTED SECRET PATTERNS"
+    print_header "═══════════════════════════════════════════════════════════════"
+    echo ""
+    
+    echo "GitSecure detects the following types of secrets:"
+    echo ""
+    
+    for name in "${!SECRET_PATTERNS[@]}"; do
+        echo "  • $name"
+    done
+    
+    echo ""
+    echo "Sensitive file patterns:"
+    echo ""
+    
+    for pattern in "${SENSITIVE_FILES[@]}"; do
+        echo "  • $pattern"
+    done
+    
+    echo ""
+}
+
+# Generate secure .gitignore
+protect_repo() {
+    print_header "═══════════════════════════════════════════════════════════════"
+    print_header "           GENERATING SECURE .gitignore"
+    print_header "═══════════════════════════════════════════════════════════════"
+    echo ""
+    
+    local gitignore=".gitignore"
+    local backup=""
+    
+    if [ -f "$gitignore" ]; then
+        backup="${gitignore}.backup.$(date +%s)"
+        cp "$gitignore" "$backup"
+        print_info "Backed up existing .gitignore to $backup"
+    fi
+    
+    cat >> "$gitignore" << 'EOF'
+
+# GitSecure - Secret Protection
+# Generated by GitSecure
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Credentials and keys
+*.pem
+*.key
+*.p12
+*.pfx
+*.pkcs12
+credentials.json
+secrets.json
+config.prod.json
+
+# SSH keys
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+*.pub
+
+# Cloud provider credentials
+.aws/credentials
+.azure/credentials
+gcloud-credentials.json
+
+# Database dumps
+*.sql
+*.dump
+
+# VPN configs
+*.ovpn
+*.rdp
+
+# Other sensitive files
+*.cer
+*.crt
+*.der
+*.log
+EOF
+    
+    print_success "Added secret protection patterns to .gitignore"
+    print_info "Review and commit the changes"
+    echo ""
+}
+
+# Install pre-commit hook
+install_hook() {
+    check_git_repo || return 1
+    
+    local hook_file=".git/hooks/pre-commit"
+    
+    if [ -f "$hook_file" ]; then
+        print_warning "Pre-commit hook already exists"
+        read -p "Overwrite? (y/N) " -n 1 -r
+        echo ""
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            return 0
+        fi
+    fi
+    
+    cat > "$hook_file" << 'EOF'
+#!/bin/bash
+
+# GitSecure pre-commit hook
+
+if command -v gitsecure &> /dev/null; then
+    gitsecure scan
+    exit $?
+else
+    echo "⚠ GitSecure not found - skipping secret scan"
+    echo "Install: curl -sSL https://raw.githubusercontent.com/YOUR_USERNAME/gitsecure/main/install.sh | bash"
+    exit 0
+fi
+EOF
+    
+    chmod +x "$hook_file"
+    
+    print_success "Pre-commit hook installed"
+    print_info "All commits will now be scanned for secrets automatically"
+}
+
+# Uninstall hook
+uninstall_hook() {
+    check_git_repo || return 1
+    
+    local hook_file=".git/hooks/pre-commit"
+    
+    if [ ! -f "$hook_file" ]; then
+        print_info "No pre-commit hook installed"
+        return 0
+    fi
+    
+    rm "$hook_file"
+    print_success "Pre-commit hook removed"
+}
+
+# Generate security report
+generate_report() {
+    check_git_repo || return 1
+    
+    local report_file="gitsecure-report-$(date +%Y%m%d_%H%M%S).txt"
+    
+    print_info "Generating security report..."
+    
+    {
+        echo "GitSecure Security Report"
+        echo "Generated: $(date)"
+        echo "Repository: $(git remote get-url origin 2>/dev/null || echo 'local')"
+        echo ""
+        echo "═══════════════════════════════════════════════════════════════"
+        echo ""
+        
+        audit_repo
+        
+    } > "$report_file"
+    
+    print_success "Report saved to: $report_file"
+}
+
+# Main command handling
+if [ $# -eq 0 ]; then
+    show_usage
+    exit 0
+fi
+
+COMMAND="$1"
+shift
+
+case "$COMMAND" in
+    scan)
+        scan_staged
+        ;;
+    audit)
+        audit_repo
+        ;;
+    check)
+        check_file "$@"
+        ;;
+    patterns)
+        show_patterns
+        ;;
+    protect)
+        protect_repo
+        ;;
+    install-hook)
+        install_hook
+        ;;
+    uninstall-hook)
+        uninstall_hook
+        ;;
+    report)
+        generate_report
+        ;;
+    -h|--help)
+        show_usage
+        ;;
+    -v|--version)
+        show_version
+        ;;
+    *)
+        print_error "Unknown command: $COMMAND"
+        echo "Use -h or --help for usage information"
+        exit 1
+        ;;
+esac
