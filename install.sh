@@ -4,7 +4,7 @@ set -e
 
 INSTALL_DIR="/usr/local/bin"
 SCRIPT_NAME="gitsecure"
-REPO_URL="https://raw.githubusercontent.com/YOUR_USERNAME/gitsecure/main/gitsecure"
+REPO_URL="https://raw.githubusercontent.com/strabo231/gitsecure/main/gitsecure"
 
 echo "🔐 GitSecure Installer"
 echo "====================="
