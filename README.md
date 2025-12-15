@@ -1,3 +1,5 @@
+[![Test GitSecure](https://github.com/strabo231/gitsecure/actions/workflows/test.yml/badge.svg)](https://github.com/strabo231/gitsecure/actions/workflows/test.yml)
+
 # GitSecure - Git Secret Scanner and Protection Tool
 
 Don't accidentally commit secrets! GitSecure scans for API keys, passwords, tokens, and credentials BEFORE they get into your git history.
