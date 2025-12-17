@@ -2,7 +2,20 @@
 
 # GitSecure - Git Secret Scanner and Protection Tool
 
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE-GPL3)
+[![Commercial License](https://img.shields.io/badge/License-Commercial-green.svg)](COMMERCIAL.md)
+[![GitHub Stars](https://img.shields.io/github/stars/strabo231/gitsecure?style=social)](https://github.com/strabo231/gitsecure/stargazers)
+[![GitHub Issues](https://img.shields.io/github/issues/strabo231/gitsecure)](https://github.com/strabo231/gitsecure/issues)
+[![Security](https://img.shields.io/badge/security-critical-red.svg)](https://github.com/strabo231/gitsecure)
+[![GitHub Sponsors](https://img.shields.io/github/sponsors/strabo231?label=Sponsor&logo=github&color=ff69b4)](https://github.com/sponsors/strabo231)
+
 Don't accidentally commit secrets! GitSecure scans for API keys, passwords, tokens, and credentials BEFORE they get into your git history.
+
+**Stop catastrophic secret leaks before they happen.** Scan for AWS keys, API tokens, passwords, and 100+ secret patterns.
+
+> ⚠️ **One leaked AWS key can cost $10,000+ in hours.** GitSecure prevents that.
+
+---
 
 ## Why GitSecure?
 
@@ -249,13 +262,13 @@ MIT License - see [LICENSE](LICENSE)
 
 ## Author
 
-Sean - [@strabo231](https://github.com/strabo231)
+Sean - [@strabo231](https://github.com/strabo231) | **Securing developers worldwide** 🔐
 
 ---
 
 **Protect your secrets. Protect your reputation. Use GitSecure.** 🔐
 
-## License
+## 📜 License & Support
 
 GitSecure is dual-licensed:
 
@@ -279,4 +292,10 @@ Features include:
 
 ---
 
-**Questions about licensing?** Contact: [aibackuppro@gmail.com]
+### Questions?
+- 💬 [GitHub Discussions](https://github.com/strabo231/gitsecure/discussions)
+- 🐛 [Report Issues](https://github.com/strabo231/gitsecure/issues)
+- 💼 [Commercial Licensing](mailto:aibackuppro@gmail.com)
+- 💖 [Become a Sponsor](https://github.com/sponsors/strabo231)
+
+
