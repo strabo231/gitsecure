@@ -1,3 +1,5 @@
+[![Test GitSecure](https://github.com/strabo231/gitsecure/actions/workflows/test.yml/badge.svg)](https://github.com/strabo231/gitsecure/actions/workflows/test.yml)
+
 # GitSecure v2.0 - Enterprise Git Secret Scanner 🔒
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE-GPL3)
