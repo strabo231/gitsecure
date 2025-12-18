@@ -1,0 +1,35 @@
+# GitSecure - Git Ignore Rules
+
+# Generated reports
+gitsecure-report-*.html
+
+# Backup files
+*.backup
+*.bak
+*.old
+*.orig
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.sublime-*
+
+# Test artifacts (inside tests folder, not the folder itself)
+tests/tmp/
+tests/*.log
+
+# Build artifacts (future)
+dist/
+build/
+
+# Local development
+*.local
+.env.local
