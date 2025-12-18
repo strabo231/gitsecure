@@ -1,0 +1,4 @@
+# Don't scan example files for secrets
+examples/** linguist-generated=true
+tests/** linguist-generated=true
+docs/RELEASE-NOTES.md linguist-documentation
