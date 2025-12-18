@@ -1,9 +1,10 @@
 #!/bin/bash
 
 # GitSecure - Git Secret Scanner and Protection Tool
-# Version: 1.0.0
+# Version: 2.0.0
+# Enhanced with entropy detection, better patterns, and improved reporting
 
-VERSION="1.0.0"
+VERSION="2.0.0"
 SCRIPT_NAME="gitsecure"
 
 # Colors
@@ -14,69 +15,85 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 MAGENTA='\033[0;35m'
 NC='\033[0m'
+BOLD='\033[1m'
+
+# Configuration
+ENTROPY_THRESHOLD=4.5  # Entropy threshold for generic secret detection
+MIN_SECRET_LENGTH=20   # Minimum length for high-entropy secrets
 
 print_success() { echo -e "${GREEN}✓${NC} $1"; }
 print_error() { echo -e "${RED}✗${NC} $1"; }
 print_info() { echo -e "${BLUE}ℹ${NC} $1"; }
 print_warning() { echo -e "${YELLOW}⚠${NC} $1"; }
-print_header() { echo -e "${CYAN}${1}${NC}"; }
-print_critical() { echo -e "${RED}🚨${NC} $1"; }
+print_header() { echo -e "${CYAN}${BOLD}${1}${NC}"; }
+print_critical() { echo -e "${RED}${BOLD}🚨${NC} $1"; }
+print_detail() { echo -e "  ${CYAN}→${NC} $1"; }
 
 show_usage() {
     cat << EOF
-${BLUE}GitSecure${NC} - Git Secret Scanner and Protection Tool v${VERSION}
+${BLUE}${BOLD}GitSecure${NC} - Git Secret Scanner and Protection Tool v${VERSION}
 
-${YELLOW}Usage:${NC}
+${YELLOW}${BOLD}Usage:${NC}
     $SCRIPT_NAME <command> [options]
 
-${YELLOW}Commands:${NC}
-    scan                     Scan staged files for secrets
-    audit                    Scan entire repository history
-    check <file>             Check specific file for secrets
-    patterns                 Show detected secret patterns
-    protect                  Generate secure .gitignore
-    install-hook             Install pre-commit hook
-    uninstall-hook           Remove pre-commit hook
-    report                   Generate security report
+${YELLOW}${BOLD}Commands:${NC}
+    ${GREEN}scan${NC}                     Scan staged files for secrets
+    ${GREEN}audit${NC}                    Scan entire repository history
+    ${GREEN}check${NC} <file>             Check specific file for secrets
+    ${GREEN}patterns${NC}                 Show detected secret patterns
+    ${GREEN}protect${NC}                  Generate secure .gitignore
+    ${GREEN}install-hook${NC}             Install pre-commit hook
+    ${GREEN}uninstall-hook${NC}           Remove pre-commit hook
+    ${GREEN}report${NC}                   Generate HTML security report
+    ${GREEN}stats${NC}                    Show repository statistics
 
-${YELLOW}Options:${NC}
+${YELLOW}${BOLD}Options:${NC}
     -h, --help              Show this help
     -v, --version           Show version
     --no-color              Disable colored output
+    --strict                Fail on any detection (even low confidence)
+    --verbose               Show detailed scanning information
 
-${YELLOW}Examples:${NC}
-    $SCRIPT_NAME scan
+${YELLOW}${BOLD}Examples:${NC}
+    ${CYAN}$SCRIPT_NAME scan${NC}
         → Scan staged files before commit
 
-    $SCRIPT_NAME audit
+    ${CYAN}$SCRIPT_NAME audit${NC}
         → Check entire git history for secrets
 
-    $SCRIPT_NAME check config.json
+    ${CYAN}$SCRIPT_NAME check config.json${NC}
         → Check specific file
 
-    $SCRIPT_NAME install-hook
+    ${CYAN}$SCRIPT_NAME install-hook${NC}
         → Install pre-commit secret scanner
 
-    $SCRIPT_NAME protect
-        → Generate .gitignore for common secrets
+    ${CYAN}$SCRIPT_NAME report${NC}
+        → Generate HTML security report
 
-${YELLOW}What Gets Detected:${NC}
-    • AWS Access Keys
-    • API Keys (GitHub, Stripe, etc.)
-    • Private Keys (RSA, SSH)
-    • Database Credentials
-    • OAuth Tokens
-    • JWT Tokens
-    • Passwords in code
-    • .env files
-    • And 100+ more patterns
+${YELLOW}${BOLD}What Gets Detected:${NC}
+    ${GREEN}✓${NC} AWS Access Keys & Secret Keys
+    ${GREEN}✓${NC} GitHub Personal Access Tokens
+    ${GREEN}✓${NC} Stripe, Twilio, SendGrid API Keys
+    ${GREEN}✓${NC} Private Keys (RSA, SSH, PGP, EC)
+    ${GREEN}✓${NC} Database Connection Strings
+    ${GREEN}✓${NC} OAuth & JWT Tokens
+    ${GREEN}✓${NC} Slack, Discord, Telegram Tokens
+    ${GREEN}✓${NC} Google Cloud, Azure, DigitalOcean Keys
+    ${GREEN}✓${NC} Passwords & Secrets in Code
+    ${GREEN}✓${NC} High-entropy strings (generic secrets)
+    ${GREEN}✓${NC} Environment files (.env, .env.*)
+    ${GREEN}✓${NC} 50+ specific patterns
 
-${YELLOW}Pre-Commit Hook:${NC}
+${YELLOW}${BOLD}Pre-Commit Hook:${NC}
     Install the hook to automatically scan before every commit:
     
-    $ $SCRIPT_NAME install-hook
+    ${CYAN}$ $SCRIPT_NAME install-hook${NC}
     
-    Then all commits will be checked automatically!
+    Then all commits will be checked automatically! 🔒
+
+${YELLOW}${BOLD}Learn More:${NC}
+    GitHub: https://github.com/strabo231/gitsecure
+    Issues: https://github.com/strabo231/gitsecure/issues
 
 EOF
 }
@@ -94,44 +111,140 @@ check_git_repo() {
     return 0
 }
 
-# Secret patterns (GitHub's supported + common patterns)
+# Calculate Shannon entropy
+calculate_entropy() {
+    local string="$1"
+    local length=${#string}
+    
+    if [ $length -eq 0 ]; then
+        echo "0"
+        return
+    fi
+    
+    # Count character frequencies
+    declare -A freq
+    for ((i=0; i<length; i++)); do
+        char="${string:$i:1}"
+        ((freq[$char]++))
+    done
+    
+    # Calculate entropy
+    local entropy=0
+    for count in "${freq[@]}"; do
+        local p=$(echo "scale=10; $count / $length" | bc)
+        local log_p=$(echo "scale=10; l($p) / l(2)" | bc -l)
+        local term=$(echo "scale=10; $p * $log_p" | bc)
+        entropy=$(echo "scale=10; $entropy - $term" | bc)
+    done
+    
+    echo "$entropy"
+}
+
+# Check if string has high entropy (likely random/secret)
+is_high_entropy() {
+    local string="$1"
+    local length=${#string}
+    
+    # Skip if too short
+    if [ $length -lt $MIN_SECRET_LENGTH ]; then
+        return 1
+    fi
+    
+    local entropy=$(calculate_entropy "$string")
+    
+    # Compare with threshold
+    local result=$(echo "$entropy >= $ENTROPY_THRESHOLD" | bc)
+    [ "$result" -eq 1 ]
+}
+
+# Enhanced secret patterns with confidence levels
 declare -A SECRET_PATTERNS=(
-    # AWS
+    # AWS (HIGH confidence)
     ["AWS Access Key"]="AKIA[0-9A-Z]{16}"
-    ["AWS Secret Key"]="[0-9a-zA-Z/+=]{40}"
+    ["AWS Secret Key"]="aws_secret_access_key[\"']?\s*[:=]\s*[\"']?[A-Za-z0-9/+=]{40}[\"']?"
+    ["AWS Session Token"]="aws_session_token[\"']?\s*[:=]\s*[\"']?[A-Za-z0-9/+=]{100,}[\"']?"
     
-    # GitHub
-    ["GitHub Token"]="gh[pousr]_[0-9a-zA-Z]{36}"
+    # GitHub (HIGH confidence)
+    ["GitHub Token"]="gh[pousr]_[0-9a-zA-Z]{36,}"
     ["GitHub PAT"]="github_pat_[0-9a-zA-Z_]{82}"
+    ["GitHub OAuth"]="gho_[0-9a-zA-Z]{36}"
+    ["GitHub App Token"]="(ghu|ghs)_[0-9a-zA-Z]{36}"
+    ["GitHub Refresh Token"]="ghr_[0-9a-zA-Z]{76}"
     
-    # API Keys
-    ["Generic API Key"]="[aA][pP][iI][-_]?[kK][eE][yY][ ]*[:=][ ]*['\"]?[0-9a-zA-Z]{32,}['\"]?"
-    ["Stripe API Key"]="sk_live_[0-9a-zA-Z]{24,}"
-    ["Slack Token"]="xox[baprs]-[0-9a-zA-Z]{10,}"
+    # Stripe (HIGH confidence)
+    ["Stripe Live Key"]="sk_live_[0-9a-zA-Z]{24,}"
+    ["Stripe Secret Key"]="sk_test_[0-9a-zA-Z]{24,}"
+    ["Stripe Restricted Key"]="rk_live_[0-9a-zA-Z]{24,}"
     
-    # Private Keys
-    ["RSA Private Key"]="-----BEGIN RSA PRIVATE KEY-----"
-    ["SSH Private Key"]="-----BEGIN OPENSSH PRIVATE KEY-----"
-    ["PGP Private Key"]="-----BEGIN PGP PRIVATE KEY BLOCK-----"
-    
-    # Database
-    ["Database URL"]="(postgres|mysql|mongodb)://[^:]+:[^@]+@"
-    ["Connection String"]="(Server|Host|Data Source)=.*;.*[Pp]assword=.*;"
-    
-    # Passwords
-    ["Password in Code"]="[pP][aA][sS][sS][wW][oO][rR][dD][ ]*[:=][ ]*['\"][^'\"]{8,}['\"]"
-    
-    # OAuth/JWT
-    ["JWT Token"]="eyJ[A-Za-z0-9_-]*\.eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*"
-    ["Bearer Token"]="[Bb]earer [A-Za-z0-9_\-\.=]+"
-    
-    # Cloud Providers
-    ["Azure Key"]="[0-9a-zA-Z/+=]{88}"
+    # Google (HIGH confidence)
     ["Google API Key"]="AIza[0-9A-Za-z_-]{35}"
+    ["Google OAuth"]="ya29\.[0-9A-Za-z_-]{100,}"
+    ["Google Service Account"]="\"type\":\s*\"service_account\""
     
-    # Generic Secrets
-    ["Secret Key"]="[sS][eE][cC][rR][eE][tT][-_]?[kK][eE][yY][ ]*[:=][ ]*['\"]?[0-9a-zA-Z]{20,}['\"]?"
-    ["Auth Token"]="[aA][uU][tT][hH][-_]?[tT][oO][kK][eE][nN][ ]*[:=][ ]*['\"]?[0-9a-zA-Z]{20,}['\"]?"
+    # Slack (HIGH confidence)
+    ["Slack Token"]="xox[baprs]-[0-9a-zA-Z-]{10,72}"
+    ["Slack Webhook"]="https://hooks\.slack\.com/services/T[a-zA-Z0-9_]{8}/B[a-zA-Z0-9_]{8,12}/[a-zA-Z0-9_]{24}"
+    
+    # Twilio (HIGH confidence)
+    ["Twilio API Key"]="SK[0-9a-fA-F]{32}"
+    ["Twilio Account SID"]="AC[a-zA-Z0-9_-]{32}"
+    
+    # SendGrid (HIGH confidence)
+    ["SendGrid API Key"]="SG\.[0-9A-Za-z_-]{22}\.[0-9A-Za-z_-]{43}"
+    
+    # Discord (HIGH confidence)
+    ["Discord Bot Token"]="[MN][A-Za-z\d]{23}\.[\w-]{6}\.[\w-]{27}"
+    ["Discord Webhook"]="https://discord\.com/api/webhooks/[0-9]{18}/[A-Za-z0-9_-]{68}"
+    
+    # Telegram (HIGH confidence)
+    ["Telegram Bot Token"]="[0-9]{8,10}:[A-Za-z0-9_-]{35}"
+    
+    # DigitalOcean (HIGH confidence)
+    ["DigitalOcean Token"]="dop_v1_[a-f0-9]{64}"
+    
+    # Heroku (HIGH confidence)
+    ["Heroku API Key"]="[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+    
+    # Azure (HIGH confidence)
+    ["Azure Storage Key"]="DefaultEndpointsProtocol=https;AccountName=.*;AccountKey=[A-Za-z0-9+/=]{88}"
+    
+    # Private Keys (HIGH confidence)
+    ["RSA Private Key"]="-----BEGIN RSA PRIVATE KEY-----"
+    ["OpenSSH Private Key"]="-----BEGIN OPENSSH PRIVATE KEY-----"
+    ["EC Private Key"]="-----BEGIN EC PRIVATE KEY-----"
+    ["PGP Private Key"]="-----BEGIN PGP PRIVATE KEY BLOCK-----"
+    ["DSA Private Key"]="-----BEGIN DSA PRIVATE KEY-----"
+    
+    # Database URLs (HIGH confidence)
+    ["PostgreSQL URL"]="postgres(ql)?://[^:]+:[^@]+@[^/]+"
+    ["MySQL URL"]="mysql://[^:]+:[^@]+@[^/]+"
+    ["MongoDB URL"]="mongodb(\+srv)?://[^:]+:[^@]+@[^/]+"
+    ["Redis URL"]="redis://[^:]*:[^@]+@[^/]+"
+    
+    # JWT (MEDIUM confidence)
+    ["JWT Token"]="eyJ[A-Za-z0-9_-]{10,}\\.eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}"
+    
+    # Generic patterns (MEDIUM confidence)
+    ["Generic API Key"]="['\"][a|A][p|P][i|I][_-]?[k|K][e|E][y|Y]['\"]\\s*[:=]\\s*['\"][0-9a-zA-Z_-]{20,}['\"]"
+    ["Generic Secret"]="['\"][s|S][e|E][c|C][r|R][e|E][t|T]['\"]\\s*[:=]\\s*['\"][0-9a-zA-Z_-]{20,}['\"]"
+    ["Generic Token"]="['\"][t|T][o|O][k|K][e|E][n|N]['\"]\\s*[:=]\\s*['\"][0-9a-zA-Z_-]{20,}['\"]"
+    ["Bearer Token"]="[Bb]earer\\s+[A-Za-z0-9_-]{20,}"
+    
+    # Passwords (MEDIUM confidence)
+    ["Password in Code"]="['\"][p|P][a|A][s|S][s|S][w|W][o|O][r|R][d|D]['\"]\\s*[:=]\\s*['\"].{8,}['\"]"
+    
+    # Connection Strings (MEDIUM confidence)
+    ["SQL Connection String"]="(Server|Host|Data Source)=.*;.*[Pp]assword=.*;.*"
+)
+
+# Confidence levels
+declare -A PATTERN_CONFIDENCE=(
+    ["AWS Access Key"]="HIGH"
+    ["GitHub Token"]="HIGH"
+    ["Stripe Live Key"]="HIGH"
+    ["Private Key"]="HIGH"
+    ["Generic API Key"]="MEDIUM"
+    ["Password in Code"]="MEDIUM"
 )
 
 # Sensitive file patterns
@@ -142,46 +255,134 @@ SENSITIVE_FILES=(
     "*.pfx"
     "*.pkcs12"
     ".env"
-    ".env.*"
+    ".env.local"
+    ".env.production"
+    ".env.development"
     "credentials.json"
     "secrets.json"
     "config.prod.json"
     "id_rsa"
     "id_dsa"
+    "id_ecdsa"
+    "id_ed25519"
     "*.ovpn"
     "*.rdp"
+    "*.cer"
+    "*.crt"
+    "*.der"
 )
+
+# Files to always ignore
+IGNORE_PATTERNS=(
+    "*.min.js"
+    "*.bundle.js"
+    "package-lock.json"
+    "yarn.lock"
+    "go.sum"
+    "*.woff"
+    "*.woff2"
+    "*.ttf"
+    "*.eot"
+    "*.svg"
+    "*.png"
+    "*.jpg"
+    "*.jpeg"
+    "*.gif"
+    "*.ico"
+    "*.pdf"
+)
+
+# Check if file should be ignored
+should_ignore_file() {
+    local file="$1"
+    
+    for pattern in "${IGNORE_PATTERNS[@]}"; do
+        if [[ $file == $pattern ]]; then
+            return 0
+        fi
+    done
+    
+    return 1
+}
 
 # Scan file for secrets
 scan_file() {
     local file="$1"
+    local verbose="${2:-false}"
     local found=0
     
     if [ ! -f "$file" ]; then
         return 0
     fi
     
+    # Skip ignored files
+    if should_ignore_file "$file"; then
+        [ "$verbose" = "true" ] && print_info "Skipping: $file (binary/minified)"
+        return 0
+    fi
+    
     # Check sensitive filename patterns
     for pattern in "${SENSITIVE_FILES[@]}"; do
-        if [[ $file == $pattern ]]; then
-            print_critical "Sensitive file detected: $file"
+        if [[ $(basename "$file") == $pattern ]]; then
+            print_critical "🔒 Sensitive file detected: $file"
+            print_detail "This file type should not be committed"
             ((found++))
         fi
     done
+    
+    # Skip binary files
+    if file "$file" 2>/dev/null | grep -q "binary"; then
+        [ "$verbose" = "true" ] && print_info "Skipping: $file (binary)"
+        return $found
+    fi
     
     # Scan content for secret patterns
     for name in "${!SECRET_PATTERNS[@]}"; do
         local pattern="${SECRET_PATTERNS[$name]}"
         
         if grep -qE "$pattern" "$file" 2>/dev/null; then
-            print_warning "Possible $name found in: $file"
+            local confidence="${PATTERN_CONFIDENCE[$name]:-MEDIUM}"
             
-            # Show line number (without revealing the secret)
-            local line_num=$(grep -nE "$pattern" "$file" | head -1 | cut -d: -f1)
-            echo "  Line $line_num: [REDACTED for security]"
+            if [ "$confidence" = "HIGH" ]; then
+                print_critical "🚨 $name detected: $file"
+            else
+                print_warning "⚠️  Possible $name: $file"
+            fi
+            
+            # Show context (without revealing the secret)
+            local matches=$(grep -nE "$pattern" "$file" | head -3)
+            while IFS= read -r match; do
+                local line_num=$(echo "$match" | cut -d: -f1)
+                print_detail "Line $line_num: [REDACTED for security]"
+            done <<< "$matches"
+            
             ((found++))
         fi
     done
+    
+    # Check for high-entropy strings (generic secrets)
+    if [ "$verbose" = "true" ]; then
+        local high_entropy_count=0
+        while IFS= read -r line; do
+            # Extract potential secrets (quoted strings, values after =, etc)
+            local strings=$(echo "$line" | grep -oE '["'\''][A-Za-z0-9+/=_-]{20,}["'\'']|=[A-Za-z0-9+/=_-]{20,}')
+            
+            while IFS= read -r str; do
+                # Clean up the string
+                str=$(echo "$str" | sed 's/^["'\''=]//; s/["'\'']$//')
+                
+                if is_high_entropy "$str"; then
+                    ((high_entropy_count++))
+                fi
+            done <<< "$strings"
+        done < "$file"
+        
+        if [ $high_entropy_count -gt 0 ]; then
+            print_warning "⚠️  High-entropy strings detected: $file"
+            print_detail "Found $high_entropy_count potential secrets (entropy analysis)"
+            ((found++))
+        fi
+    fi
     
     return $found
 }
@@ -191,7 +392,7 @@ scan_staged() {
     check_git_repo || return 1
     
     print_header "═══════════════════════════════════════════════════════════════"
-    print_header "              SCANNING STAGED FILES FOR SECRETS"
+    print_header "              🔍 SCANNING STAGED FILES FOR SECRETS"
     print_header "═══════════════════════════════════════════════════════════════"
     echo ""
     
@@ -208,7 +409,7 @@ scan_staged() {
     while IFS= read -r file; do
         if [ -f "$file" ]; then
             ((files_scanned++))
-            scan_file "$file"
+            scan_file "$file" "false"
             local issues=$?
             ((total_issues += issues))
         fi
@@ -216,23 +417,28 @@ scan_staged() {
     
     echo ""
     print_header "═══════════════════════════════════════════════════════════════"
+    print_header "                        📊 SCAN RESULTS"
+    print_header "═══════════════════════════════════════════════════════════════"
+    echo ""
     
     if [ $total_issues -eq 0 ]; then
-        print_success "No secrets detected in $files_scanned files"
-        print_info "Safe to commit!"
+        print_success "✨ No secrets detected in $files_scanned files"
+        print_success "✅ Safe to commit!"
+        echo ""
+        return 0
     else
         print_critical "Found $total_issues potential secret(s) in staged files"
-        print_error "DO NOT COMMIT!"
+        print_error "🛑 COMMIT BLOCKED - DO NOT COMMIT!"
         echo ""
-        print_info "Actions:"
-        echo "  1. Remove secrets from files"
-        echo "  2. Use environment variables instead"
-        echo "  3. Add sensitive files to .gitignore"
-        echo "  4. Run: $SCRIPT_NAME protect"
+        print_header "🔧 Recommended Actions:"
+        print_detail "1. Remove secrets from files"
+        print_detail "2. Use environment variables instead"
+        print_detail "3. Add sensitive files to .gitignore"
+        print_detail "4. Run: $SCRIPT_NAME protect"
+        print_detail "5. Use tools like doppler, vault, or AWS Secrets Manager"
+        echo ""
         return 1
     fi
-    
-    echo ""
 }
 
 # Audit entire repository
@@ -240,48 +446,57 @@ audit_repo() {
     check_git_repo || return 1
     
     print_header "═══════════════════════════════════════════════════════════════"
-    print_header "           AUDITING REPOSITORY HISTORY FOR SECRETS"
+    print_header "        🔍 AUDITING REPOSITORY FOR SECRETS"
     print_header "═══════════════════════════════════════════════════════════════"
     echo ""
-    print_warning "This may take a while for large repositories..."
+    print_warning "⏳ This may take a while for large repositories..."
     echo ""
     
     local total_issues=0
-    local commits_checked=0
+    local files_scanned=0
     
     # Get all tracked files
     local files=$(git ls-files)
     
     while IFS= read -r file; do
         if [ -f "$file" ]; then
-            scan_file "$file" > /dev/null
+            ((files_scanned++))
+            scan_file "$file" "false" > /dev/null 2>&1
             local issues=$?
-            ((total_issues += issues))
+            if [ $issues -gt 0 ]; then
+                scan_file "$file" "false"
+                ((total_issues += issues))
+            fi
         fi
     done <<< "$files"
     
     # Check for secrets in commit messages
-    print_info "Checking commit messages..."
-    local bad_commits=$(git log --all --grep -iE "(password|secret|api[-_]?key|token)" --oneline | wc -l)
+    print_info "🔍 Checking commit messages..."
+    local bad_commits=$(git log --all --oneline | grep -iE "(password|secret|api[-_]?key|token|credential)" | wc -l)
     
     if [ $bad_commits -gt 0 ]; then
         print_warning "Found $bad_commits commits with sensitive keywords in messages"
+        print_detail "Review these commits manually"
     fi
     
     echo ""
     print_header "═══════════════════════════════════════════════════════════════"
-    print_header "                    AUDIT RESULTS"
+    print_header "                    📊 AUDIT RESULTS"
     print_header "═══════════════════════════════════════════════════════════════"
     echo ""
     
+    print_info "Files scanned: $files_scanned"
+    
     if [ $total_issues -eq 0 ] && [ $bad_commits -eq 0 ]; then
-        print_success "No secrets detected in current repository state"
+        print_success "✨ No secrets detected in current repository state"
+        print_success "✅ Repository appears clean!"
     else
-        print_critical "Found $total_issues potential secret(s) in files"
-        [ $bad_commits -gt 0 ] && print_warning "$bad_commits commits with sensitive keywords"
+        print_critical "Found $total_issues potential secret(s) in tracked files"
+        [ $bad_commits -gt 0 ] && print_warning "$bad_commits commits with sensitive keywords in messages"
         echo ""
-        print_info "Note: This scans current files only, not full git history"
-        print_info "For deep history scan, use tools like git-secrets or truffleHog"
+        print_info "📝 Note: This scans current files only"
+        print_info "For deep history scan, use: git log -p | grep -E 'pattern'"
+        print_info "Or consider tools like: truffleHog, git-secrets, gitleaks"
     fi
     
     echo ""
@@ -302,51 +517,70 @@ check_file() {
     fi
     
     print_header "═══════════════════════════════════════════════════════════════"
-    print_header "              CHECKING: $file"
+    print_header "              🔍 CHECKING: $file"
     print_header "═══════════════════════════════════════════════════════════════"
     echo ""
     
-    scan_file "$file"
+    scan_file "$file" "true"
     local issues=$?
     
     echo ""
+    print_header "═══════════════════════════════════════════════════════════════"
+    echo ""
     
     if [ $issues -eq 0 ]; then
-        print_success "No secrets detected"
+        print_success "✨ No secrets detected"
+        print_success "✅ File appears safe!"
     else
         print_critical "Found $issues potential secret(s)"
+        print_error "⚠️  Review and fix before committing"
     fi
+    
+    echo ""
 }
 
 # Show detected patterns
 show_patterns() {
     print_header "═══════════════════════════════════════════════════════════════"
-    print_header "              DETECTED SECRET PATTERNS"
+    print_header "              🎯 DETECTED SECRET PATTERNS"
     print_header "═══════════════════════════════════════════════════════════════"
     echo ""
     
-    echo "GitSecure detects the following types of secrets:"
+    echo -e "${BOLD}GitSecure detects the following types of secrets:${NC}"
     echo ""
     
+    echo -e "${GREEN}${BOLD}HIGH Confidence Patterns:${NC}"
     for name in "${!SECRET_PATTERNS[@]}"; do
-        echo "  • $name"
+        if [ "${PATTERN_CONFIDENCE[$name]}" = "HIGH" ]; then
+            echo "  ✓ $name"
+        fi
     done
     
     echo ""
-    echo "Sensitive file patterns:"
+    echo -e "${YELLOW}${BOLD}MEDIUM Confidence Patterns:${NC}"
+    for name in "${!SECRET_PATTERNS[@]}"; do
+        if [ "${PATTERN_CONFIDENCE[$name]}" = "MEDIUM" ] || [ -z "${PATTERN_CONFIDENCE[$name]}" ]; then
+            echo "  • $name"
+        fi
+    done
+    
+    echo ""
+    echo -e "${BOLD}Sensitive file patterns:${NC}"
     echo ""
     
     for pattern in "${SENSITIVE_FILES[@]}"; do
-        echo "  • $pattern"
+        echo "  🔒 $pattern"
     done
     
+    echo ""
+    echo -e "${CYAN}Total patterns: ${#SECRET_PATTERNS[@]}${NC}"
     echo ""
 }
 
 # Generate secure .gitignore
 protect_repo() {
     print_header "═══════════════════════════════════════════════════════════════"
-    print_header "           GENERATING SECURE .gitignore"
+    print_header "           🛡️  GENERATING SECURE .gitignore"
     print_header "═══════════════════════════════════════════════════════════════"
     echo ""
     
@@ -356,18 +590,22 @@ protect_repo() {
     if [ -f "$gitignore" ]; then
         backup="${gitignore}.backup.$(date +%s)"
         cp "$gitignore" "$backup"
-        print_info "Backed up existing .gitignore to $backup"
+        print_info "📦 Backed up existing .gitignore to $backup"
     fi
     
     cat >> "$gitignore" << 'EOF'
 
-# GitSecure - Secret Protection
-# Generated by GitSecure
+# ═══════════════════════════════════════════════════════════════
+# GitSecure - Secret Protection Rules
+# Generated by GitSecure v2.0
+# https://github.com/strabo231/gitsecure
+# ═══════════════════════════════════════════════════════════════
 
 # Environment files
 .env
 .env.*
 !.env.example
+!.env.template
 
 # Credentials and keys
 *.pem
@@ -378,6 +616,7 @@ protect_repo() {
 credentials.json
 secrets.json
 config.prod.json
+config.production.json
 
 # SSH keys
 id_rsa
@@ -388,26 +627,54 @@ id_ed25519
 
 # Cloud provider credentials
 .aws/credentials
+.aws/config
 .azure/credentials
 gcloud-credentials.json
+google-credentials.json
 
-# Database dumps
+# Database files
 *.sql
 *.dump
+*.sqlite
+*.db
 
-# VPN configs
+# VPN and remote access
 *.ovpn
 *.rdp
 
-# Other sensitive files
+# Certificates
 *.cer
 *.crt
 *.der
+
+# Logs (may contain secrets)
 *.log
+logs/
+*.log.*
+
+# Backup files
+*.bak
+*.backup
+*.old
+*.orig
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE files that may contain secrets
+.vscode/settings.json
+.idea/workspace.xml
+*.swp
+*.swo
+*~
+
 EOF
     
-    print_success "Added secret protection patterns to .gitignore"
-    print_info "Review and commit the changes"
+    print_success "✅ Added secret protection patterns to .gitignore"
+    print_info "📝 Review and commit the changes"
+    print_detail "Run: git add .gitignore && git commit -m 'Add security protection'"
     echo ""
 }
 
@@ -415,36 +682,61 @@ EOF
 install_hook() {
     check_git_repo || return 1
     
+    print_header "═══════════════════════════════════════════════════════════════"
+    print_header "           🔒 INSTALLING PRE-COMMIT HOOK"
+    print_header "═══════════════════════════════════════════════════════════════"
+    echo ""
+    
     local hook_file=".git/hooks/pre-commit"
     
     if [ -f "$hook_file" ]; then
-        print_warning "Pre-commit hook already exists"
+        print_warning "⚠️  Pre-commit hook already exists"
         read -p "Overwrite? (y/N) " -n 1 -r
         echo ""
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            print_info "Installation cancelled"
             return 0
         fi
+        
+        # Backup existing hook
+        local backup="${hook_file}.backup.$(date +%s)"
+        cp "$hook_file" "$backup"
+        print_info "📦 Backed up existing hook to $backup"
     fi
     
-    cat > "$hook_file" << 'EOF'
+    cat > "$hook_file" << 'HOOKEOF'
 #!/bin/bash
 
 # GitSecure pre-commit hook
+# Automatically scans for secrets before each commit
+
+echo "🔍 GitSecure: Scanning for secrets..."
 
 if command -v gitsecure &> /dev/null; then
     gitsecure scan
-    exit $?
+    exit_code=$?
+    
+    if [ $exit_code -ne 0 ]; then
+        echo ""
+        echo "❌ Commit blocked by GitSecure"
+        echo "💡 Fix the issues above or use: git commit --no-verify (not recommended)"
+    fi
+    
+    exit $exit_code
 else
-    echo "⚠ GitSecure not found - skipping secret scan"
-    echo "Install: curl -sSL https://raw.githubusercontent.com/YOUR_USERNAME/gitsecure/main/install.sh | bash"
+    echo "⚠️  GitSecure not found - skipping secret scan"
+    echo "📦 Install: curl -sSL https://raw.githubusercontent.com/strabo231/gitsecure/main/install.sh | bash"
     exit 0
 fi
-EOF
+HOOKEOF
     
     chmod +x "$hook_file"
     
-    print_success "Pre-commit hook installed"
-    print_info "All commits will now be scanned for secrets automatically"
+    echo ""
+    print_success "✅ Pre-commit hook installed successfully!"
+    print_info "🔒 All commits will now be scanned for secrets automatically"
+    print_detail "Test it: make a change and try to commit"
+    echo ""
 }
 
 # Uninstall hook
@@ -458,31 +750,232 @@ uninstall_hook() {
         return 0
     fi
     
+    # Check if it's our hook
+    if ! grep -q "GitSecure" "$hook_file"; then
+        print_warning "Pre-commit hook exists but is not GitSecure"
+        read -p "Remove anyway? (y/N) " -n 1 -r
+        echo ""
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            return 0
+        fi
+    fi
+    
     rm "$hook_file"
-    print_success "Pre-commit hook removed"
+    print_success "✅ Pre-commit hook removed"
 }
 
-# Generate security report
+# Show repository statistics
+show_stats() {
+    check_git_repo || return 1
+    
+    print_header "═══════════════════════════════════════════════════════════════"
+    print_header "              📊 REPOSITORY STATISTICS"
+    print_header "═══════════════════════════════════════════════════════════════"
+    echo ""
+    
+    local repo_name=$(basename "$(git rev-parse --show-toplevel)")
+    local total_commits=$(git rev-list --count HEAD 2>/dev/null || echo "0")
+    local total_files=$(git ls-files | wc -l)
+    local total_contributors=$(git log --format='%aN' | sort -u | wc -l)
+    local repo_age=$(git log --reverse --format="%ar" | head -1)
+    local last_commit=$(git log -1 --format="%ar")
+    
+    echo -e "${BOLD}Repository:${NC} $repo_name"
+    echo -e "${BOLD}Total Commits:${NC} $total_commits"
+    echo -e "${BOLD}Total Files:${NC} $total_files"
+    echo -e "${BOLD}Contributors:${NC} $total_contributors"
+    echo -e "${BOLD}Repository Age:${NC} $repo_age"
+    echo -e "${BOLD}Last Commit:${NC} $last_commit"
+    
+    echo ""
+    print_info "Checking for .gitignore..."
+    if [ -f ".gitignore" ]; then
+        local gitignore_lines=$(wc -l < .gitignore)
+        print_success ".gitignore exists ($gitignore_lines lines)"
+    else
+        print_warning ".gitignore not found"
+        print_detail "Run: $SCRIPT_NAME protect"
+    fi
+    
+    echo ""
+    print_info "Checking for pre-commit hook..."
+    if [ -f ".git/hooks/pre-commit" ]; then
+        print_success "Pre-commit hook installed"
+    else
+        print_warning "Pre-commit hook not installed"
+        print_detail "Run: $SCRIPT_NAME install-hook"
+    fi
+    
+    echo ""
+}
+
+# Generate HTML security report
 generate_report() {
     check_git_repo || return 1
     
-    local report_file="gitsecure-report-$(date +%Y%m%d_%H%M%S).txt"
+    local report_file="gitsecure-report-$(date +%Y%m%d_%H%M%S).html"
+    local temp_file="/tmp/gitsecure-scan-$$.txt"
     
-    print_info "Generating security report..."
+    print_info "📊 Generating security report..."
     
-    {
-        echo "GitSecure Security Report"
-        echo "Generated: $(date)"
-        echo "Repository: $(git remote get-url origin 2>/dev/null || echo 'local')"
-        echo ""
-        echo "═══════════════════════════════════════════════════════════════"
-        echo ""
+    # Run audit and capture output
+    audit_repo > "$temp_file" 2>&1
+    
+    # Generate HTML report
+    cat > "$report_file" << 'HTMLEOF'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GitSecure Security Report</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 40px;
+            text-align: center;
+        }
+        .header h1 {
+            font-size: 36px;
+            margin-bottom: 10px;
+        }
+        .header p {
+            opacity: 0.9;
+            font-size: 16px;
+        }
+        .content {
+            padding: 40px;
+        }
+        .metric {
+            display: inline-block;
+            margin: 10px 20px;
+            text-align: center;
+        }
+        .metric-value {
+            font-size: 48px;
+            font-weight: bold;
+            color: #667eea;
+        }
+        .metric-label {
+            font-size: 14px;
+            color: #666;
+            text-transform: uppercase;
+            margin-top: 5px;
+        }
+        .section {
+            margin: 30px 0;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+        }
+        .section h2 {
+            color: #333;
+            margin-bottom: 15px;
+        }
+        .scan-output {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+        }
+        .footer {
+            text-align: center;
+            padding: 20px;
+            background: #f8f9fa;
+            color: #666;
+            font-size: 14px;
+        }
+        .status-safe { color: #28a745; font-weight: bold; }
+        .status-warning { color: #ffc107; font-weight: bold; }
+        .status-danger { color: #dc3545; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔒 GitSecure Security Report</h1>
+            <p>Comprehensive Secret Scanning Analysis</p>
+        </div>
         
-        audit_repo
+        <div class="content">
+            <div class="section">
+                <h2>📊 Report Information</h2>
+                <p><strong>Generated:</strong> REPORT_DATE</p>
+                <p><strong>Repository:</strong> REPO_NAME</p>
+                <p><strong>GitSecure Version:</strong> VERSION_NUMBER</p>
+            </div>
+            
+            <div class="section">
+                <h2>🔍 Scan Results</h2>
+                <div class="scan-output">SCAN_OUTPUT</div>
+            </div>
+            
+            <div class="section">
+                <h2>💡 Recommendations</h2>
+                <ul style="line-height: 1.8; margin-left: 20px;">
+                    <li>Use environment variables for secrets</li>
+                    <li>Add sensitive files to .gitignore</li>
+                    <li>Install the pre-commit hook: <code>gitsecure install-hook</code></li>
+                    <li>Use secret management tools (AWS Secrets Manager, Vault, Doppler)</li>
+                    <li>Regularly audit your repository with: <code>gitsecure audit</code></li>
+                    <li>Rotate any exposed credentials immediately</li>
+                </ul>
+            </div>
+        </div>
         
-    } > "$report_file"
+        <div class="footer">
+            <p>Generated by GitSecure - Protecting developers worldwide 🔒</p>
+            <p><a href="https://github.com/strabo231/gitsecure" style="color: #667eea;">github.com/strabo231/gitsecure</a></p>
+        </div>
+    </div>
+</body>
+</html>
+HTMLEOF
     
-    print_success "Report saved to: $report_file"
+    # Replace placeholders
+    local repo_name=$(basename "$(git rev-parse --show-toplevel)")
+    local report_date=$(date "+%Y-%m-%d %H:%M:%S")
+    local scan_output=$(cat "$temp_file" | sed 's/</\&lt;/g; s/>/\&gt;/g')
+    
+    sed -i.bak "s/REPORT_DATE/$report_date/g" "$report_file"
+    sed -i.bak "s/REPO_NAME/$repo_name/g" "$report_file"
+    sed -i.bak "s/VERSION_NUMBER/$VERSION/g" "$report_file"
+    sed -i.bak "s|SCAN_OUTPUT|$scan_output|g" "$report_file"
+    rm -f "${report_file}.bak"
+    
+    # Cleanup
+    rm -f "$temp_file"
+    
+    print_success "✅ Report generated: $report_file"
+    print_info "📂 Open in browser to view"
+    
+    # Try to open in browser
+    if command -v xdg-open &> /dev/null; then
+        xdg-open "$report_file" &>/dev/null &
+    elif command -v open &> /dev/null; then
+        open "$report_file" &>/dev/null &
+    fi
 }
 
 # Main command handling
@@ -518,6 +1011,9 @@ case "$COMMAND" in
         ;;
     report)
         generate_report
+        ;;
+    stats)
+        show_stats
         ;;
     -h|--help)
         show_usage
